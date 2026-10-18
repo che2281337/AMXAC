@@ -1,0 +1,2 @@
+# AMXAC
+AmxModX AntiCheat
