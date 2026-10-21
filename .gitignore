@@ -1,0 +1,13 @@
+# AMX Mod X compiler package (downloaded locally, see README "Установка")
+tools/
+
+# Build output (build.ps1); ship .amxx files as release assets instead
+compiled/
+*.amxx
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
