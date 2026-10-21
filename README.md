@@ -1,265 +1,121 @@
-# AMXAC — модульный серверный античит для CS 1.6
+**English** | [Русский](README_RU.md)
 
-Требования: Metamod(-R), AMX Mod X **1.9+** (используются `create_cvar`, `bind_pcvar_*`, `client_print_color`, `client_infochanged`), модули `fakemeta`, `hamsandwich`, `nvault`. Работает и на ReHLDS/ReGameDLL.
+# AMXAC
 
-## Как устроено
+Modular server-side anti-cheat for Counter-Strike 1.6.
 
-```
-amxac_core.amxx    очки подозрения, затухание, уровни, логи, уведомления, команды
-   ▲  natives / forwards (include/amxac.inc, helpers: include/amxac_util.inc)
-   │
-   ├─ amxac_antiwh.amxx   antiwh     не отправляет клиенту невидимых врагов (ESP/радар/звуки)
-   │                                 и врагов вообще, пока игрок полностью ослеплён (анти-noflash)
-   │
-   ├─ amxac_aim.amxx      silentaim  psilent: рывок на выстреле с точным возвратом
-   │                      aimsnap    рывок в голову со стопом (слабый)
-   │                      trigger    мгновенная или «ровная» реакция на врага в прицеле
-   │                      tracking   ведение сквозь стену, «залипание» на цели, HS%
-   │                      nospread   угол выстрела отклонён на spread, пуля идёт идеально
-   │                      norecoil   прицел + punch неподвижны весь спрей
-   │                      knifebot   удар ножом мгновенно при входе врага в радиус
-   │                      fastzoom   выстрел через ≤40 мс после зума
-   │                      rapidfire  клики по пистолету с нулевой дисперсией
-   │                      noflash    попадания при полной ослеплённости
-   │
-   ├─ amxac_move.amxx     bhop       серии идеальных прыжков
-   │                      sgs        серии идеальных дактапов (SGS / ground strafe скрипт)
-   │                      strafe     auto-strafe (sidemove без клавиш), strafe-helper (тайминг смены A/D)
-   │                      speedhack  баланс клиентского таймера
-   │                      angles     pitch за пределами ±89, спинбот
-   │                      netcode    fakelag (пачки choke-нутых cmd)
-   │                      movecheck  движение против клавиши / быстрее maxspeed
-   │
-   ├─ amxac_misc.amxx     misc       флуд сменой ника, много клиентов с одного IP
-   │                      cvars      проверка cvar по configs/amxac_cvars.ini
-   │                      history    помнит прошлые ALERT по SteamID (nvault)
-   │                      +          кик за дубль SteamID, чёрный список IP/подсетей
-   │
-   ├─ amxac_punish.amxx   уровни → мут / кик / бан, отложенные баны, команды админа
-   │
-   └─ amxac_ghost.amxx    honeypot   ловушка: невидимый админ, в которого «попадают» только читы
-```
+- AMX Mod X 1.9+ with `fakemeta`, `hamsandwich`, `nvault`.
+- ReAPI is only needed for `amxac_antiesp` (sound ESP protection); everything else runs on plain HLDS too.
 
-Плагинов семь (плюс тестовый `amxac_selftest`), а детекторов 22. Каждый детектор регистрируется в ядре как отдельный модуль, поэтому очки, логи и вес `amxac_w_<детектор>` у каждого свои. Вес 0 не только глушит очки, но и полностью выключает работу детектора. Ядро ничего не знает о читах: свой плагин-детектор подключается через `amxac_register_module` и `amxac_report`.
+## How it works
 
-**Очки, а не баны.** Каждый репорт добавляет очки (`points × amxac_w_<модуль>`), очки затухают экспоненциально (`amxac_halflife`). Уровни:
+Detectors never ban on their own. Every suspicious action adds points to the player, points decay over time (half-life 2 minutes by default), and the total triggers levels:
 
-| Уровень | Порог | Что происходит |
+| Level | Points | Default |
 |---|---|---|
-| WARN | `amxac_warn` 30 | запись в лог |
-| ALERT | `amxac_alert` 60 | сообщение админам с флагом `amxac_admin_flag` |
-| ACTION | `amxac_action` 100 | действие из `amxac_punish_action` (по умолчанию `none`) |
+| WARN | 30 | logged |
+| ALERT | 60 | admins notified in chat |
+| ACTION | 100 | action from `amxac_punish_action` (`none` by default) |
 
-Что делать на каждом уровне, решает `amxac_punish`. Старый `amxac_action_cmd` в ядре тоже работает, но если включены оба, сработают оба. Используйте что-то одно.
+For each level you choose `none`, `mute`, `kick` or `ban`. Kicks and bans are delayed to the end of the round, so a cheater can't tell what gave him away; leaving the server doesn't dodge a pending ban. Bans go through your ban system (`amxac_punish_ban_cmd`) or the engine's `banid`/`addip`.
 
-Уровень снижается только когда очки падают ниже 70% порога, чтобы не спамить. Все репорты пишутся в `logs/amxac_ГГГГММДД.log` с ником, userid, SteamID и IP.
+Each detector is a separate module with its own weight `amxac_w_<name>` (0 = off). Everything is logged to `logs/amxac_YYYYMMDD.log` with name, SteamID and IP.
 
-Команды: `amx_ac_status [игрок]`, `amx_ac_reset <игрок>`, `amx_ac_modules`.
+## Plugins
 
-## Установка
+| Plugin | What it does |
+|---|---|
+| `amxac_core` | scoring, levels, logs, admin notifications, API for your own modules |
+| `amxac_antiwh` | doesn't send enemies the player can't see (wallhack, radar); sends no enemies at all while the player is fully flashed (no-flash) |
+| `amxac_antiesp` | hidden enemies' footsteps and other sounds come from the right direction and loudness but not from their real position; gunshot events are hidden from those who can't see the shooter (**ReAPI**) |
+| `amxac_aim` | **silentaim** (flick on the shot with an exact return), **aimsnap**, **trigger** (instant or fixed-delay reaction), **tracking** (aim on an enemy behind a wall, aim lock, HS ratio), **nospread**, **norecoil**, **knifebot**, **fastzoom**, **rapidfire**, **noflash** (aimed hits while flashed) |
+| `amxac_move` | **bhop** and **sgs** scripts (frame-perfect jumps/ducktaps), jump/duck **macros** (AHK timers), **strafe** (auto-strafe, strafe helper), **speedhack**, fake `msec 0` commands, **angles** (anti-aim pitch, spinbot), **netcode** (fakelag, lag shot), **movecheck** (movement no real client can send) |
+| `amxac_misc` | name flood, players per IP, client cvar rules (`amxac_cvars.ini`), cvar query blockers, history of offences per SteamID, duplicate SteamID kick, IP/subnet blacklist |
+| `amxac_punish` | mute / kick / ban per level, delayed and offline bans, custom ban/kick commands and chat texts |
+| `amxac_ghost` | honeypot: an admin becomes invisible; ESP still draws him and aimbots lock on him, so whoever keeps shooting at or tracking him is flagged |
+| `amxac_selftest` | **test servers only**: fakes cheat behaviour on your own usercmds to check that detectors fire |
 
-1. Скомпилировать.
-   - **Windows:** скачать AMX Mod X 1.10 base package для Windows с [amxmodx.org](https://www.amxmodx.org/downloads-new.php) и распаковать в `tools\amxx` (чтобы получилось `tools\amxx\addons\amxmodx\scripting\amxxpc.exe`), затем `powershell -ExecutionPolicy Bypass -File .\build.ps1`. Результат в `compiled\`. Папки `tools\` и `compiled\` в git не попадают.
-   - **Linux / на самом сервере:** скопировать `scripting/*.sma` и `scripting/include/*.inc` в `addons/amxmodx/scripting` (инклуды в `include/`) и собрать штатным `./amxxpc amxac_core.sma` и т.д.
-   - Нужен AMX Mod X 1.9 или 1.10. ReAPI не нужен.
-2. `.amxx` в `addons/amxmodx/plugins`; `plugins-amxac.ini`, `amxac.cfg`, `amxac_cvars.ini`, `amxac_blocked_ips.ini` в `addons/amxmodx/configs`. Ядро в списке плагинов должно стоять первым.
-3. Первую неделю держать все `amxac_punish_*` на `none` и `amxac_notify_reports 1`, читать логи и подстраивать пороги под свой сервер. Только потом включать наказания.
+## Modules
 
-## Наказания (amxac_punish)
+Every module below has its own score and weight `amxac_w_<module>`; thresholds are in `amxac.cfg`.
 
-Каждому уровню назначается действие: `none`, `mute`, `kick` или `ban` (`amxac_punish_warn`, `amxac_punish_alert`, `amxac_punish_action`). Если позже назначено действие мягче уже запланированного, оно не перекрывает старое.
+| Module | Plugin | Catches | How |
+|---|---|---|---|
+| `antiwh` | antiwh | wallhack, ESP, radar | Prevention: an enemy is sent to a player only if a trace from his eyes reaches the enemy's head, body, sides or feet (also extrapolated by ping). Only world geometry blocks sight; a seen enemy stays visible for 0.3 s. Trace budget per second, fails open under load |
+| *(anti no-flash)* | antiwh | no-flash | Prevention: while a player's screen is fully white after a flashbang, no enemies are sent to him |
+| `antiesp` | antiesp | sound ESP, sound radar | Prevention (ReAPI): sounds of enemies the player can't see come from the world entity at a fake distance with recomputed volume — right direction and loudness, wrong position. Gunshot events go only to those who see the shooter or the impact |
+| `silentaim` | aim | pSilent | Flick ≥15° on the shot cmd, held 1–2 cmds, then back to the old angle within 1° / 10%. Also counts the raw `+attack`, so it still works behind Unreal Aim Blocker |
+| `aimsnap` | aim | aimbot snaps (weak) | Headshot right after a ≥20° snap, aim stops dead (≤0.3°) on the next cmd |
+| `trigger` | aim | triggerbot | Time from an enemy entering the crosshair to a fresh click: ≥5 of 10 within 15 ms, or 10 reactions with σ ≤ 8 ms (fixed-delay trigger) |
+| `tracking` | aim | wallhack aiming, smooth aimbot | Crosshair kept on a hidden enemy ≥600 ms with mean error ≤1.2° while moving the mouse; aim lock: σ of aim error ≤0.25° while the view turns ≥15°; ≥17 headshots in the last 20 gun kills |
+| `nospread` | aim | no-spread | The shot cmd sits off the mouse path by the spread while the real bullet (captured trace) flies dead on the path — 8 of 10 shots |
+| `norecoil` | aim | no-recoil | `v_angle + punchangle` frozen (≤0.25°, ≤25% of recoil) through a spray of ≥6 shots |
+| `knifebot` | aim | knifebot | First swing within 15 ms of an enemy entering 64 units, 7 of 10 times |
+| `fastzoom` | aim | fast-zoom script | Scoped shot within 40 ms of zooming, 3 of 6 scoped shots |
+| `rapidfire` | aim | pistol autoclicker | 12 pistol clicks with interval σ ≤ 2.5 ms |
+| `noflash` | aim | no-flash | ≥3 hits from fresh clicks on enemies during one full blindness (headshot counts double) |
+| `bhop` | move | bhop script, jump macros | 10 frame-perfect jumps in a row, 6 "clean" ones (no presses in the air), 80% of 30; jump pressed ≥25×/s for 3 s at an even interval (AHK) |
+| `sgs` | move | SGS / ducktap script, duck macros | Same as bhop for `+duck` |
+| `strafe` | move | auto-strafe, strafe helper | `sidemove` without A/D on ≥50% of air cmds; A/D switched exactly on the mouse reversal frame in ≥90% of 40 switches (humans: 20–40%) |
+| `speedhack` | move | speedhack, fake commands | Client clock (sum of `msec`) runs ≥300 ms ahead of the server; bursts of `msec = 0` cmds |
+| `movecheck` | move | movement hacks | Movement against the only key held, or a move vector longer than the `maxspeed` the client clamps to |
+| `angles` | move | anti-aim, spinbot | Pitch beyond ±89.9°; yaw turning faster than 2000°/s for 2 s |
+| `netcode` | move | fakelag, lag shot | Steady bursts of 12+ choked cmds; shots arriving in choked packets far more often than other cmds (backtrack) |
+| `misc` | misc | name stealer, multi-client | ≥4 name changes in 10 s; more than 3 players from one IP |
+| `cvars` | misc | lazy cheats, query blockers | Protected client cvars from `amxac_cvars.ini`; cvar queries left unanswered while the client keeps playing |
+| `history` | misc | repeat offenders | Players who reached ALERT before start with extra points (per SteamID, 30 days) |
+| `honeypot` | ghost | ESP, aimbot | Fresh shots aimed at, or crosshair following, an invisible admin (`amx_ac_ghost`) that no honest player can see |
 
-- **Кик и бан откладываются**: по умолчанию до конца раунда, но не дольше `amxac_punish_delay_max` (на случай режимов без раундов). Если `amxac_punish_round_end 0`, задержка случайная между `delay_min` и `delay_max`. Так читер не понимает, на каком действии спалился. Админы видят в чате, что наказание запланировано, и могут его отменить: `amx_ac_cancel <игрок>`.
-- **Выход с сервера не спасает**: если бан запланирован, при отключении он применяется по SteamID/IP (`amxac_punish_offline_cmd` или `banid`/`addip`).
-- **Своя система банов**: `amxac_punish_ban_cmd` с плейсхолдерами `%userid% %name% %steamid% %ip% %time% %reason% %module%`. Если пусто, используется `banid` по SteamID (для LAN/нон-стим ID — `addip`). Ник и SteamID очищаются от `;`, `"` и переводов строки.
-- **Срок** бана и мута задаётся общим (`amxac_punish_ban_time`, `amxac_punish_mute_time`) и при желании отдельно для каждого уровня (`amxac_punish_ban_time_alert`, `..._action`, `amxac_punish_mute_time_*`; `-1` = брать общий).
-- **Мут** глушит голос (`FM_Voice_SetClientListening`) и чат (`say`, `say_team`).
-- **Тексты в чате** настраиваются: `amxac_punish_msg_kick`, `amxac_punish_msg_ban`, `amxac_punish_msg_mute`. Цвета `!g`/`!t`/`!n`, подстановки `%name%` и `%time%` (срок выводится как «7 d», «2 h», «permanent»).
-- **Причина** для игрока — `amxac_punish_reason` (по умолчанию «Cheating»). Модуль, который сработал, пишется только в лог: незачем подсказывать читеру.
-- **Иммунитет**: `amxac_punish_immunity`. Такие игроки только попадают в отчёты.
+Plus direct kicks without scoring: duplicate SteamID (emulators) and the IP/subnet blacklist.
 
-Команды (флаг ban): `amx_ac_punish <игрок> <kick|ban|mute>` — сразу, без задержки; `amx_ac_cancel <игрок>`; `amx_ac_unmute <игрок>`.
+## Installation
 
-## Совместимость с модами (amxac_set_ignore)
+1. Compile `scripting/*.sma` with the includes from `scripting/include/` (for `amxac_antiesp` also the ReAPI includes).
+2. Put the `.amxx` files into `addons/amxmodx/plugins/` and add the lines from `configs/plugins-amxac.ini` to `plugins.ini`. `amxac_core` goes first; drop `amxac_antiesp` without ReAPI.
+3. Copy `configs/amxac.cfg` (or `configs/ru/amxac.cfg` with Russian comments), `amxac_cvars.ini` and `amxac_blocked_ips.ini` into `addons/amxmodx/configs/`.
+4. For the first week keep all punishments at `none` and `amxac_notify_reports 1`, read the logs and tune thresholds. Then enable punishments.
 
-Плагины, которые сами телепортируют игрока, ускоряют его, крутят камеру и т.п., могут временно выключить для него подсчёт очков:
+Every setting is commented in `amxac.cfg`.
+
+**Server types:**
+- autobhop servers: `amxac_w_bhop 0`;
+- KZ / bhop servers: `amxac_w_sgs 0`, `amxac_w_strafe 0` or raised thresholds — scrolling and good strafes are normal there;
+- knife servers: knifebot is already strict, lower `amxac_w_knifebot` if needed.
+
+## Commands
+
+| Command | |
+|---|---|
+| `amx_ac_status [player]` | scores per player / per module |
+| `amx_ac_reset <player>` | clear a player's score |
+| `amx_ac_modules` | loaded modules and weights |
+| `amx_ac_punish <player> <kick\|ban\|mute>` | punish now |
+| `amx_ac_cancel <player>` / `amx_ac_unmute <player>` | cancel a pending punishment / lift a mute |
+| `amx_ac_blockip` / `amx_ac_unblockip` / `amx_ac_blocklist` | IP blacklist (`1.2.3.4` or `1.2.3.0/24`) |
+| `amx_ac_ghost` | toggle the honeypot ghost (walk with Shift: footsteps can't be muted) |
+| `amx_awh_stats` | anti-wallhack trace usage |
+| `amx_ac_test <mode\|list\|off> [player]` | self-test modes |
+
+`amxac_debug 1` prints why a detector fired or not into the console of admins with the rcon flag.
+
+## Testing
+
+Enable `amxac_selftest` on a test server (above `amxac_aim`/`amxac_move` in `plugins.ini`), add bots and turn on one mode at a time: `silent`, `aim`, `trigger`, `wall`, `norecoil`, `knife`, `zoom`, `rapid`, `bhop`, `sgs`, `macro`, `strafe`, `speed`, `zero`, `movehack`, `pitch`, `spin`. Watch `amx_ac_status` and the log; `amx_ac_test list` explains each mode.
+
+## API
 
 ```pawn
 #include <amxac>
 
-teleport_player(id)
-{
-	amxac_set_ignore(id, -1, 2.0);   // все модули, 2 секунды
-	// ... телепорт ...
-}
+new g_mod = amxac_register_module("mycheck");
+amxac_report(id, g_mod, 10.0, "reason %d", value);
+amxac_set_ignore(id, -1, 2.0);   // e.g. around a teleport in your mod
 ```
 
-`module` — id модуля или `-1` для всех. `seconds`: `0` снимает игнор, отрицательное значение действует до выхода игрока. Детекторы при этом продолжают работать, отбрасываются только репорты.
+Forwards `amxac_on_report` (return `PLUGIN_HANDLED` to drop a report) and `amxac_on_level`. Full list in `scripting/include/amxac.inc`.
 
-## Детекторы
+## Compatibility
 
-**antiwh.** Перехватывает `AddToFullPack` и не отправляет живому игроку врагов, до которых не проходит ни одна трассировка (центр, голова, ноги, бока; от текущих глаз и от глаз, экстраполированных на пинг; цель тоже экстраполируется). Блокирует видимость только геометрия мира: двери, стёкла и решётки считаются прозрачными. Результат кэшируется на 100 мс, а после последнего «увидел» цель остаётся видимой ещё 300 мс, чтобы игроки не появлялись из воздуха за углом. Это самый тяжёлый модуль по CPU; на 32 слота следите за нагрузкой и при необходимости увеличьте `amxac_awh_interval`.
-
-**Анти-noflash (в antiwh).** Пока игрок в фазе полного ослепления (ScreenFade с альфой 255, время удержания), враги ему не отправляются вообще, без трассировок. С no-flash читом игрок видит пустую карту вместо целей. Белый экран у честного игрока остаётся как есть. Выключается `amxac_awh_flash 0` и работает даже при `amxac_awh_enabled 0`.
-
-**silentaim.** Кольцевой буфер углов из usercmd и отметки выстрела (Ham `PrimaryAttack` срабатывает внутри того же usercmd). Паттерн: база → рывок ≥15° (держится 1–2 cmd, есть выстрел) → возврат к базе с точностью до max(1°, 10% рывка). Первую секунду после спавна не проверяем: сервер сам выставляет углы.
-
-Выстрелом считается не только реальный `PrimaryAttack`, но и зажатый `+attack` в usercmd в том виде, в каком его прислал клиент (`amxac_silent_raw_attack 1`). Это нужно для совместимости с Unreal Aim Blocker: его режим «задержка кнопок» передаёт `+attack` игре на кадр позже, и пуля вылетает уже после возврата угла. Чит при этом обезврежен, но рывок по-прежнему совпадает с нажатием, которое прислал клиент, и мы его ловим. Условие: `amxac_aim` должен стоять в `plugins.ini` выше блокера, иначе мы увидим уже задержанные кнопки.
-
-**aimsnap.** Попадание в голову на cmd, где прицел прыгнул ≥20°, а на следующем cmd сдвинулся ≤0.3°. Даёт 5 очков, имеет смысл только в сумме с другими сигналами.
-
-**trigger.** Каждый cmd трассирует прицел (позиции уже лаг-компенсированы движком). Время реакции считается в клиентском времени (сумма `msec`) от момента, когда враг попал в прицел, до первого свежего клика. Сигналы: ≥5 из 10 реакций ≤15 мс, или 10 реакций со стандартным отклонением ≤8 мс («очеловеченный» триггер с фиксированной задержкой).
-
-**tracking.** Каждый cmd ищется враг, ближайший к прицелу (в пределах 3°). Пока прицел на нём, идёт «сегмент». В конце сегмента проверяется:
-- *wall-track*: враг всё время был за стеной, но игрок вёл его ≥600 мс, реально двигал мышь (≥10°) и при этом держал прицел почти точно на нём (средняя ошибка ≤1.2°). Вести врага «на слух» сквозь тонкую стену — честный навык, но так ведут на несколько градусов неточно, и это не считается;
-- *lock*: враг виден, вид повернулся на ≥15°, а ошибка прицела относительно врага почти не менялась (σ ≤ 0.25°). У аимбота постоянный сдвиг до кости головы, у человека ошибка «гуляет»;
-- *HS%*: ≥17 хедшотов из последних 20 убийств с огнестрела.
-
-**nospread.** Разброс считается из `random_seed` usercmd, поэтому чит может заранее повернуть угол выстрела на −spread. Сравниваются три вещи: середина углов соседних cmd (куда реально ведёт мышь), угол самого выстрела и реальное направление пули (перехватывается первая трассировка внутри `PrimaryAttack`). У человека угол выстрела лежит на траектории мыши, а пуля отклонена на spread. При no-spread всё наоборот: угол выстрела выбивается из траектории, а пуля идёт точно в цель. Математику seed воспроизводить не нужно. Дробовики не проверяются.
-
-**norecoil.** Пуля летит по `v_angle + punchangle`. No-recoil держит эту сумму неподвижной, пока сам punch растёт на градусы. Punch между выстрелами быстро гаснет (~10°/с), поэтому редко поднимается выше 1–2°. Спрей из ≥6 выстрелов с отдачей ≥1°, где эффективный угол сместился не больше чем на 0.25° и не больше четверти отдачи, считается подозрительным. Если игрок просто держит мышь неподвижно, смещение примерно равно самой отдаче.
-
-**knifebot.** То же, что trigger, только для ножа: время от входа врага в радиус 64 юнита (с прямой видимостью) до первого удара. ≥7 из 10 ударов за ≤15 мс. На нож-серверах все спамят кликами, и случайное попадание в окно бывает часто, поэтому порог выше, чем у trigger.
-
-**fastzoom.** Для AWP/Scout/SG550/G3SG1: время от первого cmd в зуме до выстрела. Зум и выстрел в одном кадре тоже считаются. ≥3 из 6 выстрелов в зуме за ≤40 мс.
-
-**rapidfire.** 12 кликов по полуавтоматическому пистолету подряд (интервалы ≤300 мс) со стандартным отклонением интервалов ≤2.5 мс. Бинд `+attack` на колесо мыши даёт неровные интервалы и не срабатывает.
-
-**noflash.** Во время фазы удержания флешки при альфе 255 экран полностью белый. Считаются только попадания с нового нажатия: очередь вслепую в дверной проём и попадание в того, кто в неё вбежал, — нормальная игра, она засчитывается один раз за очередь. ≥3 таких попадания за одну ослеплённость (хедшот за два) дают репорт.
-
-**bhop.** «Идеальный» прыжок: нажатие на первом usercmd на земле. Сигналы: серия идеальных подряд (10), серия *чистых* идеальных подряд (6, без единого нажатия прыжка в воздухе: колесо мыши спамит +jump, скрипт жмёт ровно один раз) и доля идеальных за последние 30 бхопов (≥80%). Лестницы и вода исключены. На серверах с autobhop выставить `amxac_w_bhop 0`. Учтите: у игроков с низким FPS окно кадра шире, поэтому идеальные прыжки у них случаются чаще.
-
-**sgs.** Та же логика, что у bhop, только для `+duck`. Скрипт SGS (stand-up ground strafe, «дактап-скрипт») жмёт присед ровно на первом кадре после приземления. Дактап подбрасывает игрока, поэтому цепочка выглядит так же, как цепочка бхопов: приземление → нажатие → в воздухе → приземление. Человек со скроллом на `+duck` иногда попадает в идеальный кадр, но спамит присед в воздухе. Скрипт нажимает один раз. Пороги те же: 10 идеальных подряд, 6 «чистых» подряд или 80% идеальных из 30. На KZ-серверах, где SGS — обычная техника и скроллят все, лучше начать с `amxac_w_sgs 0` и посмотреть статистику через `amxac_debug 1`.
-
-**Макросы на прыжок/присед (внутри bhop и sgs).** AHK-скрипты вида «зажать Ctrl на 1 мс каждые 17 мс» жмут кнопку по таймеру и не смотрят, где игрок. Проверка идеального приземления их не видит, зато видна сама частота. Клиент превращает каждое такое касание в ровно один usercmd с `+duck`, и получается ~50 нажатий в секунду с почти одинаковым интервалом (из-за кадров он читается как 10/20/20/10 мс, разброс ~0.3 от среднего). Колесо мыши даёт короткие всплески с паузами, а руки не держат такой темп секундами. Репорт: ≥25 нажатий в секунду три секунды подряд, и разброс интервалов не больше 0.4 (`amxac_macro_*`). Исключение — колёса со свободным прокручиванием (Logitech hyper-scroll): раскрученное колесо тоже даёт долгий ровный поток. На KZ проверь таких игроков через `amxac_debug 1`, прежде чем включать наказания.
-
-**strafe.** *Auto-strafe*: в воздухе `sidemove ≠ 0`, а клавиши A/D не нажаты (больше чем в половине из 200 cmd). С клавиатуры так не получится, а вот джойстик или `+strafe` теоретически могут. *Strafe-helper*: синхронность мыши и клавиш хелпера не выдаёт, у хорошего бхоппера она тоже под 99%, потому что в момент разворота мышь почти стоит и рассинхрон не виден. Выдаёт его тайминг. Человек меняет A на D в пределах пары кадров от разворота мыши, то раньше, то позже, и ровно в кадр разворота попадает в 20–40% случаев. Хелпер попадает ровно в этот кадр каждый раз. Репорт: из 40 смен клавиши ≥90% ровно в кадр разворота (`amxac_strafe_switch_*`).
-
-**speedhack.** Баланс таймера: сумма `msec` минус реальное время. Отрицательная сторона ограничена (`amxac_speed_credit`), поэтому лагающий игрок не может накопить запас времени.
-
-Отдельно ловятся **пустые команды**: настоящий клиент всегда тратит на кадр хоть сколько-то времени (`msec ≥ 1` вплоть до 1000 fps). Несколько кадров подряд с `msec = 0` придуманы читом: время они не тратят, баланс таймера их не видит, но оружие и кнопки в них работают. Репорт: 3+ таких пачки (по 3+ кадра) за 5 секунд (`amxac_zero_*`). Выше ~1000 fps кадры короче 1 мс честно дают `msec = 0`, поэтому учитываются только клиенты с обычной частотой кадров (в среднем ≥4 мс на кадр).
-
-**movecheck.** Клиент собирает forward/side/upmove из клавиш (`cl_forwardspeed` и т.п. × доля нажатия) и затем ужимает вектор до `maxspeed`, которую ему прислал сервер. Поэтому настоящий клиент никогда не шлёт движение против единственной нажатой клавиши (зажат A, а sidemove вправо) и вектор длиннее `maxspeed`. Смена `maxspeed` (оружие, прицел, фризтайм) доходит до клиента через пинг, поэтому пределом считается максимальная `maxspeed` за последнюю секунду. Репорт: 3+ кадра «против клавиши» или 20%+ кадров выше предела на окне в 200 кадров движения (`amxac_move_*`). Отрицательные `cl_forwardspeed`/`cl_sidespeed` тоже переворачивают знак. Это не стандартная настройка, поэтому такой игрок получает очки как читер.
-
-**angles.** |pitch| > 89.9 в usercmd. Спинбот: yaw крутится быстрее 2000°/с две секунды подряд.
-
-**netcode.** Все cmd из одного пакета выполняются в одном кадре сервера. ≥8 пакетов по 12+ cmd за 10 секунд выглядят как fakelag. Сигнал слабый: игрок с очень низким `cl_cmdrate` или плохим каналом тоже может его дать.
-
-*Lag shot* (идея из UnrealDemoScanner, «AIM TYPE 4»): чит «душит» пакеты именно в момент выстрела, чтобы выстрел пришёл позже и сервер компенсировал его дальше в прошлое (backtrack). У плохого канала задержки случайные, поэтому выстрелы попадают в «задушенные» пакеты так же часто, как остальные кадры. Репорт: из 20 выстрелов ≥50% пришли в пакетах по 12+ cmd, а из остальных кадров таких ≤15% (`amxac_lagshot_*`).
-
-**misc.** ≥4 смены ника за 10 секунд; больше 3 игроков с одного IP (`amxac_misc_max_per_ip 0` отключает проверку, например для LAN). Это только очки: с одного IP могут играть семья или абоненты мобильного CGNAT.
-
-Ещё два прямых кика, мимо очков:
-- **Дубль SteamID** (`amxac_misc_dup_steamid`): если SteamID уже есть на сервере, кикается **новый** клиент. LAN, PENDING и боты не проверяются. Если игрок вылетел и перезаходит, пока его старый слот ещё не отвалился по таймауту, он тоже получит кик и сможет зайти через несколько секунд.
-- **Чёрный список IP**: `configs/amxac_blocked_ips.ini`, по одному адресу или подсети (`1.2.3.4`, `1.2.3.0/24`). Проверка на `client_connect`. Управление из игры: `amx_ac_blockip`, `amx_ac_unblockip`, `amx_ac_blocklist`, файл переписывается автоматически.
-
-**cvars.** На спавне (не чаще раза в минуту) запрашивает cvar из `amxac_cvars.ini`. В список включены только cvar, защищённые sv_cheats: обычный клиент не может их поменять, а значит не получит ложное срабатывание. Нормальные читы подменяют ответ, так что модуль ловит только самых ленивых.
-
-Плюс *блокировщик запросов* (идея из Unreal Cheat Detector): некоторые читы глотают `query_client_cvar`, чтобы сервер не видел их кваров. Настоящий клиент отвечает всегда, даже «Bad CVAR request». Модуль на каждом спавне запрашивает `sensitivity` (он есть у всех). Если ответа нет 10 секунд, а клиент при этом продолжает слать usercmd, то есть не лагает и не грузится, это промах. Два промаха дают репорт (`amxac_query_*`). Старые нон-стим клиенты протокола 47 на запросы не отвечают вообще, поэтому по умолчанию считается только тот, кто в этом соединении уже отвечал, а потом замолчал. На сервере только со Steam-клиентами можно включить `amxac_query_strict 1`.
-
-## Ловушка «невидимый админ» (amxac_ghost)
-
-Идея из GOD SEEKER (Karaulov). Админ пишет `amx_ac_ghost` и становится «призраком»: невидимым для всех, неуязвимым, без звуков оружия и голоса. Стрелять он не может. Честный игрок о нём не знает. Сущность призрака при этом продолжает отправляться клиентам и только рисуется полностью прозрачной, поэтому ESP его рисует, а аимбот на него наводится. Значит:
-- **прицельные выстрелы в призрака**: 3 выстрела с нового нажатия (не очередь) за 30 секунд в пределах 1.5° от него = 25 очков. Выстрел не считается, если рядом с линией огня есть настоящий враг. Призрак не твёрдый: пули и игроки проходят сквозь него, иначе честный игрок, стреляющий во врага за спиной призрака, попадал бы в призрака;
-- **ведение призрака прицелом** (только врагами призрака, аимботы целятся во врагов): прицел в пределах 2.5° от него 700+ мс, пока он сдвинулся на 64+ юнита = 20 очков. Стоящего на месте призрака не считаем, иначе честный игрок, который просто держит угол, попадёт под подозрение.
-
-Админы получают уведомление в чат, очки идут в модуль `honeypot`. Тени игроков на время ловушки выключаются (клиент рисует тень даже у невидимки), имя призрака при наведении прицела не показывается.
-
-Ограничения:
-- шаги играет движок, и без ReAPI их не заглушить: **ходи с Shift**, при ходьбе CS шагов не играет;
-- призрак не держит раунд: если из его команды больше никого живого нет, он тихо умирает и раунд кончается как обычно;
-- на радаре своей команды призрак виден, это нормально;
-- не подбирай бомбу.
-
-**history.** Считает по SteamID, сколько раз игрок доходил до ALERT (не больше одного раза за сессию). При повторном заходе админам приходит уведомление, а игроку начисляется 5 очков за каждый прошлый ALERT (максимум 25). Записи старше 30 дней удаляются. LAN/нон-стим ID не учитываются.
-
-## Самопроверка (amxac_selftest)
-
-Тестовый плагин подделывает твои собственные usercmd под поведение чита. Детекторы видят ровно то, что прислал бы читер. **Только для тестового сервера**: эффект настоящий, пули реально летят туда, куда «целится чит». Строка в `plugins-amxac.ini` закомментирована и должна стоять **выше** `amxac_aim`/`amxac_move`: fakemeta вызывает `CmdStart` в порядке загрузки плагинов.
-
-```
-amx_ac_test list [игрок]     список режимов и их состояние
-amx_ac_test <режим> [игрок]  включить/выключить режим (по умолчанию себе)
-amx_ac_test off [игрок]      выключить всё
-```
-
-| Режим | Что делает | Что должно сработать |
-|---|---|---|
-| `silent` | стреляй тапами: кадр выстрела доворачивает на врага в 16–70° от прицела | silentaim |
-| `aim` | зажми огонь: прицел прыгает на ближайшего врага и держится на нём | aimsnap, tracking (lock) |
-| `trigger` | выстрел в тот же кадр, когда враг под прицелом | trigger |
-| `wall` | без стрельбы прицел ведёт ближайшего врага, даже за стеной | tracking (wall) |
-| `norecoil` | спрей: угол = начало спрея − punch | norecoil |
-| `knife` | удар ножом сразу при входе врага в радиус | knifebot |
-| `zoom` | снайперка, тап: зум на этом кадре, выстрел на следующем | fastzoom |
-| `rapid` | пистолет, зажми огонь: клик ровно каждый второй кадр | rapidfire |
-| `bhop` | зажми прыжок: прыжок только на первом кадре на земле | bhop |
-| `sgs` | зажми присед: дактап только на первом кадре на земле | sgs |
-| `macro` | ничего жать не надо: присед на 1 кадр каждые 17 мс, как AHK-таймер | sgs (macro) |
-| `strafe` | в воздухе без A/D: sidemove по движению мыши | strafe |
-| `speed` | msec × 1.5 | speedhack |
-| `pitch` | pitch 120 | angles |
-| `spin` | yaw +60° каждый кадр | angles (spin) |
-| `zero` | 3 кадра из каждых 10 с `msec = 0` | speedhack (fake cmds) |
-| `movehack` | forward/side × 1.6, больше предела maxspeed | movecheck |
-
-Чтобы видеть, почему детектор сработал или промолчал, включи `amxac_debug 1`. Тогда в консоль (`~`) игроку с флагом rcon будут приходить строки `[AC debug]`: статистика каждого спрея для norecoil, каждого прыжка для bhop и каждого окна для strafe.
-
-Порядок проверки:
-1. Поставь `amxac_notify_reports 1`, добавь ботов (`amxac_include_bots` не нужен: подделываются твои cmd, а не ботов).
-2. Включи один режим и поиграй минуту.
-3. Смотри чат, `amx_ac_status <ник>` и `logs/amxac_*.log`.
-4. Выключи режим и `amx_ac_reset <ник>` перед следующим.
-
-Режимы можно включать боту (`amx_ac_test bhop <бот>`), но тогда нужен `amxac_include_bots 1`, а движение ботов не похоже на человеческое, так что результат менее показателен. nospread и noflash самотест не имитирует: для nospread нужно предсказывать разброс по seed, для noflash достаточно бросить флешку себе под ноги и стрелять в режиме `aim`.
-
-## Как написать модуль
-
-```pawn
-#include <amxmodx>
-#include <amxac>
-
-new g_mod;
-
-public plugin_init()
-{
-	register_plugin("AMXAC MyCheck", AMXAC_VERSION, "me");
-	g_mod = amxac_register_module("mycheck", AMXAC_VERSION, "me");
-}
-
-something_suspicious(id)
-{
-	if (amxac_is_monitored(id))
-		amxac_report(id, g_mod, 10.0, "what exactly happened: %d", 42);
-}
-```
-
-Natives `amxac_log` и `amxac_notify` пишут в общий лог и в чат админам. Форварды: `amxac_on_report` (верните `PLUGIN_HANDLED`, чтобы отбросить репорт; например, модуль-белый список) и `amxac_on_level` (свой бан, Discord-вебхук, запись demo). В `amxac_util.inc` лежат хуки на оружие, позиция глаз, перевод направления в углы и т.д.
-
-## Производительность
-
-HLDS однопоточный, поэтому важна только скорость одного ядра. Расчёт для 32 игроков при 100 fps у клиентов, это примерно 3200 usercmd в секунду:
-
-| Плагин | Что делает каждый кадр | Порядок затрат |
-|---|---|---|
-| core | таймер раз в секунду | ничто |
-| move | арифметика на каждый cmd | очень мало |
-| misc | только события (смена ника, спавн) | ничто |
-| aim | один `CmdStart`, перебор врагов чистой арифметикой; трассировка только если враг рядом с прицелом, хук `TraceLine` включается только на время выстрела | мало |
-| antiwh | вызов на **каждую** сущность в PVS каждого клиента + трассировки | **основная нагрузка** |
-
-Что сделано ради скорости:
-- Самое дорогое в Pawn — вызовы natives. Состояние, которое редко меняется (кого проверяем, жив ли, команда, пинг), кэшируется и не запрашивается каждый кадр.
-- Позиции глаз игроков кэшируются на их собственных cmd. Сначала враги отбираются по ним простой арифметикой, и только для кандидатов идут точные лаг-компенсированные `pev` и трассировки.
-- Хук `FM_TraceLine` для nospread висит только во время `PrimaryAttack`. Постоянный хук отправлял бы в AMX каждую трассировку сервера, включая трассировки antiwh.
-- В antiwh есть бюджет трассировок в секунду (`amxac_awh_traces`, по умолчанию 20000). Когда бюджет кончается, просроченные пары показываются, то есть геймплей не ломается, а защита становится грубее. `amx_awh_stats` показывает расход трассировок и сколько раз сработал fail-open.
-
-**X5690 на 32 слота.** По одному ядру это примерно уровень современного бюджетного десктопа. Ванильный ReHLDS на 32 слота занимает доли ядра, поэтому aim/move/misc/core должны укладываться в единицы процентов. Antiwh зависит от карты и онлайна. Если `amx_awh_stats` часто показывает fail-open, а `stats` на сервере — рост CPU, сначала увеличьте `amxac_awh_interval` до 0.15–0.2. Следующий шаг — переписать antiwh на C++ как модуль Metamod: там нет накладных расходов AMX на каждый вызов `AddToFullPack`.
-
-Как мерить: `stats` в консоли сервера (CPU и fps) с плагином и без. Боты подходят только для aim/move: `AddToFullPack` для ботов не вызывается, поэтому нагрузку antiwh видно только с живыми игроками.
-
-## Известные ограничения
-
-- Ни один модуль не тестировался на живом сервере. Все пороги взяты из общих соображений и требуют настройки.
-- Углы в usercmd приходят по сети в диапазоне 0..360°, поэтому все сравнения углов нормализуют и pitch, и yaw. Если увидишь в логах «рывки» около 360°, это баг, пришли строку лога.
-- Не сделано: no-smoke (нужна геометрия облака дыма), slowmotion (потеря пакетов даёт такую же картину), запись demo и Discord (нужны сторонние модули: HLTV, curl/sockets).
+- **Unreal Aim Blocker**: list it below `amxac_aim` and `amxac_move`.
+- **WHBlocker**: can replace `amxac_antiwh` (set `amxac_awh_enabled 0`, keep `amxac_awh_flash 1`); `amxac_antiesp` works with either.
+- **UNREAL_ANTI_ESP**: don't run it together with `amxac_antiesp`.

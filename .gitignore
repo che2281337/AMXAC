@@ -11,3 +11,6 @@ compiled/
 *.swp
 Thumbs.db
 .DS_Store
+
+# Local build script
+build.ps1
